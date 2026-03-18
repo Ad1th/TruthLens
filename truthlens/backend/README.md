@@ -13,3 +13,4 @@ This folder contains the FastAPI backend for TruthLens.
 2. Start server: `uvicorn app.main:app --reload`
 
 The API will be available at http://localhost:8000/api/v1/analyze
+.
