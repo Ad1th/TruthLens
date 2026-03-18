@@ -21,26 +21,29 @@ interface AnalysisResponse {
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const API_URL = "https://your-backend.com/api/v1/analyze"; // TODO: Set real backend URL
+const API_URL = "http://127.0.0.1:8000/api/v1/analyze";
 
 // Debounce map
 const debounceTimers: Record<string, number> = {};
 
-chrome.runtime.onMessage.addListener(
-  (msg: AnalysisRequest, sender, sendResponse) => {
-    if (msg.type !== "REQUEST_ANALYSIS") return;
-    const { url, text, pageHash } = msg;
+async function getApiUrl(): Promise<string> {
+  const result = await chrome.storage.local.get("truthlens_api_url");
+  return result.truthlens_api_url || API_URL;
+}
 
-    // Debounce by pageHash
-    if (debounceTimers[pageHash]) {
-      clearTimeout(debounceTimers[pageHash]);
-    }
-    debounceTimers[pageHash] = window.setTimeout(() => {
-      handleAnalysisRequest(url, text, pageHash, sender.tab?.id);
-      delete debounceTimers[pageHash];
-    }, 500); // 500ms debounce
-  },
-);
+chrome.runtime.onMessage.addListener((msg: AnalysisRequest, sender) => {
+  if (msg.type !== "REQUEST_ANALYSIS") return;
+  const { url, text, pageHash } = msg;
+
+  // Debounce by pageHash
+  if (debounceTimers[pageHash]) {
+    clearTimeout(debounceTimers[pageHash]);
+  }
+  debounceTimers[pageHash] = setTimeout(() => {
+    handleAnalysisRequest(url, text, pageHash, sender.tab?.id);
+    delete debounceTimers[pageHash];
+  }, 500); // 500ms debounce
+});
 
 async function handleAnalysisRequest(
   url: string,
@@ -59,12 +62,13 @@ async function handleAnalysisRequest(
 
   // Call backend
   try {
-    const res = await fetch(API_URL, {
+    const apiUrl = await getApiUrl();
+    const res = await fetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url,
-        text,
+        text: text.slice(0, 20000),
         config: { sensitivity: "medium", lang: "en" },
       }),
     });
@@ -76,12 +80,13 @@ async function handleAnalysisRequest(
     });
     sendAnalysisResult(tabId, data);
   } catch (e) {
+    const message = e instanceof Error ? e.message : "Unknown error";
     // Error handling
     sendAnalysisResult(tabId, {
       overall_bias_score: 0,
       confidence: 0,
       flags: [],
-      meta: { error: e.message },
+      meta: { error: message },
     });
   }
 }
