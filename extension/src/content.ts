@@ -31,9 +31,15 @@ type AnalysisMessage = {
   meta?: Record<string, unknown>;
 };
 
+type ToggleMessage = {
+  type: "TRUTHLENS_TOGGLE";
+  enabled: boolean;
+};
+
 let styleInjected = false;
 const highlightElements: HTMLElement[] = [];
 let inspectorHost: HTMLElement | null = null;
+let analysisEnabled = true;
 
 // Utility: Extract visible text from DOM
 function extractVisibleText(): string {
@@ -266,17 +272,43 @@ function highlightSpans(flags: AnalysisFlag[]) {
 }
 
 // Listen for messages from background (analysis results)
-chrome.runtime.onMessage.addListener((msg: AnalysisMessage) => {
+chrome.runtime.onMessage.addListener((msg: AnalysisMessage | ToggleMessage) => {
+  if (msg.type === "TRUTHLENS_TOGGLE") {
+    analysisEnabled = msg.enabled;
+    if (!analysisEnabled) {
+      clearHighlights();
+      return;
+    }
+
+    void runAnalysis();
+    return;
+  }
+
   if (msg.type === "ANALYSIS_RESULT" && Array.isArray(msg.flags)) {
     highlightSpans(msg.flags);
   }
 });
 
-// Main: Extract, hash, and request analysis
-(async function main() {
+async function runAnalysis() {
+  if (!analysisEnabled) {
+    clearHighlights();
+    return;
+  }
+
   const text = extractVisibleText();
+  if (!text) return;
+
   const url = window.location.href;
   await requestAnalysis(text, url);
-})();
+}
 
-// TODO: Implement highlightSpans, inspector popup, and undo logic
+// Main: initialize setting, then analyze if enabled.
+(async function main() {
+  const stored = await chrome.storage.local.get("truthlens_enabled");
+  analysisEnabled =
+    typeof stored.truthlens_enabled === "boolean"
+      ? stored.truthlens_enabled
+      : true;
+
+  await runAnalysis();
+})();
