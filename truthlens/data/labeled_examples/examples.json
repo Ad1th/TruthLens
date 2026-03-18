@@ -1,0 +1,40 @@
+{
+  "examples": [
+    {
+      "text": "The shocking truth about this event will change your mind forever.",
+      "flags": [
+        {
+          "span": "shocking truth",
+          "type": "emotional_trigger",
+          "explanation": "Uses emotionally charged language to provoke a reaction.",
+          "suggested_rewrite": "the available evidence about this event shows",
+          "confidence": 0.92
+        }
+      ]
+    },
+    {
+      "text": "Experts say this is the only way to solve the problem.",
+      "flags": [
+        {
+          "span": "Experts say",
+          "type": "weak_source",
+          "explanation": "Cites unnamed experts, which weakens credibility.",
+          "suggested_rewrite": "A study by Dr. Smith suggests",
+          "confidence": 0.81
+        }
+      ]
+    },
+    {
+      "text": "If we allow this, soon everything will fall apart.",
+      "flags": [
+        {
+          "span": "soon everything will fall apart",
+          "type": "slippery_slope",
+          "explanation": "Presents a worst-case scenario as inevitable.",
+          "suggested_rewrite": "there may be consequences to consider",
+          "confidence": 0.77
+        }
+      ]
+    }
+  ]
+}
