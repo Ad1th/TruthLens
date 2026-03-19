@@ -28,7 +28,11 @@ type AnalysisMessage = {
   overall_bias_score: number;
   confidence: number;
   flags: AnalysisFlag[];
-  meta?: Record<string, unknown>;
+  meta?: {
+    provider?: string;
+    error?: string;
+    [key: string]: unknown;
+  };
 };
 
 type ToggleMessage = {
@@ -39,6 +43,7 @@ type ToggleMessage = {
 let styleInjected = false;
 const highlightElements: HTMLElement[] = [];
 let inspectorHost: HTMLElement | null = null;
+let statusHost: HTMLElement | null = null;
 let analysisEnabled = true;
 
 // Utility: Extract visible text from DOM
@@ -119,6 +124,66 @@ function clearHighlights() {
     parent.normalize();
   }
   highlightElements.length = 0;
+}
+
+function removeStatusBadge() {
+  if (statusHost) {
+    statusHost.remove();
+    statusHost = null;
+  }
+}
+
+function renderStatusBadge(data: {
+  score: number;
+  confidence: number;
+  flagsCount: number;
+  provider?: string;
+  error?: string;
+}) {
+  if (!statusHost) {
+    statusHost = document.createElement("div");
+    statusHost.id = "truthlens-status-host";
+    document.body.appendChild(statusHost);
+  }
+
+  const provider = data.provider || "unknown";
+  const confidencePct = Math.round((data.confidence || 0) * 100);
+  const tone = data.error
+    ? "#b91c1c"
+    : data.score >= 70
+      ? "#b45309"
+      : "#0f766e";
+  const detail = data.error
+    ? `Error: ${data.error}`
+    : `${data.flagsCount} flag${data.flagsCount === 1 ? "" : "s"}`;
+
+  statusHost.innerHTML = `
+    <div style="
+      position: fixed;
+      right: 16px;
+      top: 16px;
+      z-index: 2147483645;
+      max-width: min(360px, calc(100vw - 32px));
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+      color: #111827;
+      font: 12px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
+    ">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <strong style="font-size:13px;">TruthLens</strong>
+        <button id="truthlens-status-close" style="border:0;background:transparent;cursor:pointer;font-size:14px;color:#6b7280;">x</button>
+      </div>
+      <div style="margin-top:6px;color:${tone};font-weight:600;">Score ${data.score} · ${confidencePct}%</div>
+      <div style="margin-top:2px;color:#374151;">${detail}</div>
+      <div style="margin-top:2px;color:#6b7280;">Provider: ${provider}</div>
+    </div>
+  `;
+
+  const close = statusHost.querySelector("#truthlens-status-close");
+  close?.addEventListener("click", () => removeStatusBadge());
 }
 
 function findTextNodeMatch(
@@ -277,6 +342,7 @@ chrome.runtime.onMessage.addListener((msg: AnalysisMessage | ToggleMessage) => {
     analysisEnabled = msg.enabled;
     if (!analysisEnabled) {
       clearHighlights();
+      removeStatusBadge();
       return;
     }
 
@@ -285,6 +351,13 @@ chrome.runtime.onMessage.addListener((msg: AnalysisMessage | ToggleMessage) => {
   }
 
   if (msg.type === "ANALYSIS_RESULT" && Array.isArray(msg.flags)) {
+    renderStatusBadge({
+      score: msg.overall_bias_score,
+      confidence: msg.confidence,
+      flagsCount: msg.flags.length,
+      provider: msg.meta?.provider,
+      error: typeof msg.meta?.error === "string" ? msg.meta.error : undefined,
+    });
     highlightSpans(msg.flags);
   }
 });

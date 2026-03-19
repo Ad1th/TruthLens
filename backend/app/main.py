@@ -28,6 +28,11 @@ CACHE_TTL = 24 * 60 * 60  # 24 hours
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 class Citation(BaseModel):
     title: str
@@ -155,7 +160,7 @@ def heuristic_classify(text: str, sensitivity: str = "2") -> AnalyzeResponse:
     )
 
 
-def parse_llm_response(payload: Dict[str, Any], source_text: str) -> AnalyzeResponse:
+def parse_llm_response(payload: Dict[str, Any], source_text: str, provider: str) -> AnalyzeResponse:
     raw_score = int(payload.get("overall_bias_score", 0))
     raw_conf = float(payload.get("confidence", 0.0))
     raw_flags = payload.get("flags", [])
@@ -210,7 +215,7 @@ def parse_llm_response(payload: Dict[str, Any], source_text: str) -> AnalyzeResp
         meta={
             "analyzed_at": now_iso(),
             "engine_version": "v1.0-llm",
-            "provider": "openai-compatible",
+            "provider": provider,
             "flags_detected": len(flags),
         },
     )
@@ -275,23 +280,92 @@ def llm_classify(text: str, url: str, config: Dict[str, Any]) -> AnalyzeResponse
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         raise RuntimeError("LLM returned unexpected payload") from exc
 
-    return parse_llm_response(payload, text)
+    return parse_llm_response(payload, text, provider="openai-compatible")
+
+
+def gemini_classify(text: str, url: str, config: Dict[str, Any]) -> AnalyzeResponse:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    model = str(config.get("model") or GEMINI_MODEL)
+    sensitivity = str(config.get("sensitivity") or "2")
+
+    prompt_text = (
+        "Analyze this webpage text for manipulative language and potential bias. "
+        "Return strict JSON with keys: overall_bias_score (0-100 int), confidence (0-1 float), "
+        "flags (array). Each flag must include: span, context, type, explanation, confidence, "
+        "suggested_rewrite, citations. Citations can be empty if unavailable."
+        f"\n\nURL: {url}"
+        f"\nSensitivity: {sensitivity}"
+        f"\n\nTEXT:\n{text[:20000]}"
+    )
+
+    request_body = {
+        "systemInstruction": {
+            "parts": [{"text": "You are a media-bias analyst. Output only valid JSON."}],
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt_text}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    endpoint = f"{GEMINI_BASE_URL.rstrip('/')}/models/{model}:generateContent"
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini HTTP error {exc.code}: {detail[:300]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Gemini connection failed: {exc.reason}") from exc
+
+    try:
+        candidates = body["candidates"]
+        content = candidates[0]["content"]
+        parts = content["parts"]
+        model_text = parts[0]["text"]
+        payload = json.loads(model_text)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Gemini returned unexpected payload") from exc
+
+    return parse_llm_response(payload, text, provider="gemini")
 
 
 def classify_text(text: str, url: str, config: Optional[Dict[str, Any]] = None) -> AnalyzeResponse:
     cfg = config or {}
     sensitivity = str(cfg.get("sensitivity") or "2")
     heuristics_only = bool(cfg.get("heuristics_only", False))
+    provider = str(cfg.get("provider") or LLM_PROVIDER or "openai").strip().lower()
 
     if heuristics_only:
         return heuristic_classify(text, sensitivity=sensitivity)
 
     try:
+        if provider == "gemini":
+            return gemini_classify(text, url, cfg)
         return llm_classify(text, url, cfg)
     except Exception as exc:
         fallback = heuristic_classify(text, sensitivity=sensitivity)
         fallback.meta["fallback_reason"] = str(exc)
         fallback.meta["provider"] = "heuristic-fallback"
+        fallback.meta["llm_provider"] = provider
         return fallback
 
 def short_hash(text: str) -> str:
@@ -309,9 +383,13 @@ async def health() -> Dict[str, Any]:
     return {
         "status": "ok",
         "time": now_iso(),
+        "llm_provider": LLM_PROVIDER,
         "openai_configured": bool(OPENAI_API_KEY),
         "openai_base_url": DEFAULT_OPENAI_BASE_URL,
         "default_model": DEFAULT_MODEL,
+        "gemini_configured": bool(GEMINI_API_KEY),
+        "gemini_base_url": GEMINI_BASE_URL,
+        "gemini_model": GEMINI_MODEL,
     }
 
 @router.post("/api/v1/analyze", response_model=AnalyzeResponse)
